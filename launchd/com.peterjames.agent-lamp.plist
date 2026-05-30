@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.peterjames.agent-lamp</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/peterjames/study/Code/Agent-Lamp/host/agent-lamp-daemon</string>
+    <string>--port</string>
+    <string>/dev/cu.usbmodem1101</string>
+    <string>--running-timeout</string>
+    <string>90</string>
+    <string>--refresh-interval</string>
+    <string>5</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/peterjames/study/Code/Agent-Lamp</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/private/tmp/agent-lamp-daemon.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/private/tmp/agent-lamp-daemon.err</string>
+</dict>
+</plist>

@@ -137,14 +137,63 @@ Use `hooks/claude/settings.example.json` as the reference. Copy the `hooks` bloc
 
 ## Codex Hook
 
-Codex hooks may run in an app sandbox that cannot open `/dev/cu.*` directly. Use the queue bridge: keep one Terminal process running outside Codex, and let Codex hooks write status lines to `/private/tmp/agent-lamp-queue.tsv`.
+Codex hooks may run in an app sandbox that cannot open `/dev/cu.*` directly. Use the queue bridge: keep one daemon running outside Codex, and let Codex hooks write status lines to `/private/tmp/agent-lamp-queue.tsv`.
 
-Start the bridge in Terminal:
+Start the bridge manually in Terminal:
 
 ```bash
 cd /Users/peterjames/study/Code/Agent-Lamp
 ./host/agent-lamp-daemon --port /dev/cu.usbmodem1101
 ```
+
+Codex hooks only append status lines to the queue; the bridge is the process
+that forwards those lines to the Tab5 over USB serial. For daily use, install
+the LaunchAgent so the bridge starts again after login:
+
+```bash
+cp launchd/com.peterjames.agent-lamp.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.peterjames.agent-lamp.plist
+```
+
+If the queue updates but the lamp does not, restart the bridge:
+
+```bash
+cd /Users/peterjames/study/Code/Agent-Lamp
+./host/agent-lamp-daemon --port /dev/cu.usbmodem1101
+```
+
+The daemon keeps the serial connection open and resends the last known status
+every few seconds, so a Tab5 reconnect or reset recovers from the default
+`idle` screen without waiting for the next hook event. It also has a long
+`running` timeout as a fallback for interrupted Codex turns where no `Stop`
+hook is emitted. Avoid a very short timeout for normal Codex work because
+thinking can be quiet for several seconds:
+
+```bash
+./host/agent-lamp-daemon --port /dev/cu.usbmodem1101 --running-timeout 90 --refresh-interval 5
+```
+
+You can check whether hooks are writing status lines with:
+
+```bash
+tail -f /private/tmp/agent-lamp-queue.tsv
+```
+
+Codex hook behavior is intentionally conservative:
+
+- `UserPromptSubmit` sets `running`.
+- `PermissionRequest` is silent for Codex by default because full-permission or
+  auto-approved runs can still emit permission-check events that are not waiting
+  for the user.
+- Set `AGENT_LAMP_SHOW_PERMISSION_REQUESTS=1` if you want Codex permission
+  checks to show `waiting`.
+- `Notification` sets `waiting`.
+- A successful `PostToolUse` is normally silent to avoid flickering during each
+  tool call.
+- A successful `PostToolUse` after `waiting` sets `running`, so auto-approved
+  permissions do not leave the lamp stuck in `waiting`.
+- A failed `PostToolUse` sets `error`.
+- `Stop` sets `ok`.
 
 Then use `.codex/hooks.json` or `hooks/codex/hooks.example.json` as the Codex hook config reference. Keep the command path absolute:
 
