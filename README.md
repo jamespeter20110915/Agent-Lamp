@@ -162,15 +162,22 @@ cd /Users/peterjames/study/Code/Agent-Lamp
 ./host/agent-lamp-daemon --port /dev/cu.usbmodem1101
 ```
 
-The daemon keeps the serial connection open and resends the last known status
-every few seconds, so a Tab5 reconnect or reset recovers from the default
-`idle` screen without waiting for the next hook event. It also has a long
-`running` timeout as a fallback for interrupted Codex turns where no `Stop`
-hook is emitted. Avoid a very short timeout for normal Codex work because
-thinking can be quiet for several seconds:
+The daemon keeps the serial connection open and restores the last known status
+when it starts. It does not periodically resend the same status by default,
+because repeated `set` commands make the current firmware redraw the full
+screen.
+
+Codex Desktop does not emit a hook event when a turn is interrupted. To avoid
+leaving the lamp stuck in `running`, the daemon reads the Codex transcript path
+recorded by the hook and clears `running` when that transcript records a
+`turn_aborted` event.
+
+Do not use a fixed `running` timeout for normal Codex work. During thinking or
+long commands, Codex may not emit hook events for a long time, so a timeout can
+incorrectly mark active work as `ok`. The timeout is disabled by default:
 
 ```bash
-./host/agent-lamp-daemon --port /dev/cu.usbmodem1101 --running-timeout 90 --refresh-interval 5
+./host/agent-lamp-daemon --port /dev/cu.usbmodem1101 --running-timeout 0 --refresh-interval 0
 ```
 
 You can check whether hooks are writing status lines with:
@@ -182,16 +189,15 @@ tail -f /private/tmp/agent-lamp-queue.tsv
 Codex hook behavior is intentionally conservative:
 
 - `UserPromptSubmit` sets `running`.
-- `PermissionRequest` is silent for Codex by default because full-permission or
-  auto-approved runs can still emit permission-check events that are not waiting
-  for the user.
-- Set `AGENT_LAMP_SHOW_PERMISSION_REQUESTS=1` if you want Codex permission
-  checks to show `waiting`.
+- `PermissionRequest` sets `waiting` so the Tab5 shows real permission prompts.
+  A successful `PostToolUse` after `waiting` sets `running`, so approved
+  permissions do not leave the lamp stuck in `waiting`.
+- Set `AGENT_LAMP_HIDE_PERMISSION_REQUESTS=1` or
+  `AGENT_LAMP_SHOW_PERMISSION_REQUESTS=0` if you want to hide permission checks.
 - `Notification` sets `waiting`.
 - A successful `PostToolUse` is normally silent to avoid flickering during each
   tool call.
-- A successful `PostToolUse` after `waiting` sets `running`, so auto-approved
-  permissions do not leave the lamp stuck in `waiting`.
+- A successful `PostToolUse` after `waiting` sets `running`.
 - A failed `PostToolUse` sets `error`.
 - `Stop` sets `ok`.
 

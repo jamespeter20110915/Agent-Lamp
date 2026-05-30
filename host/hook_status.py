@@ -20,6 +20,7 @@ STATE_MESSAGES = {
 }
 MAX_FIELD_LENGTH = 120
 DEFAULT_STATE_FILE = "/private/tmp/agent-lamp-state.json"
+DEFAULT_EVENT_LOG = "/private/tmp/agent-lamp-events.jsonl"
 
 
 def text_field(payload: dict, *names: str) -> str:
@@ -62,7 +63,7 @@ def state_for_event(
     payload: dict,
     previous_state: str | None = None,
     *,
-    show_permission_requests: bool = False,
+    show_permission_requests: bool = True,
 ) -> str | None:
     if event.endswith("Failure") or event in {"Error", "ToolFailure"}:
         return "error"
@@ -100,6 +101,7 @@ def message_for_payload(payload: dict, state: str) -> str:
         text_field(
             payload,
             "message",
+            "prompt",
             "notification",
             "notification_type",
             "tool_name",
@@ -136,7 +138,17 @@ def read_previous_state(state_path: str) -> str | None:
     return state if isinstance(state, str) else None
 
 
-def write_state_file(state_path: str, *, state: str, agent: str, repo: str, message: str, event: str) -> None:
+def write_state_file(
+    state_path: str,
+    *,
+    state: str,
+    agent: str,
+    repo: str,
+    message: str,
+    event: str,
+    payload: dict | None = None,
+) -> None:
+    payload = payload or {}
     path = Path(state_path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -147,12 +159,61 @@ def write_state_file(state_path: str, *, state: str, agent: str, repo: str, mess
                 "repo": repo,
                 "message": message,
                 "event": event,
+                "session_id": payload.get("session_id"),
+                "turn_id": payload.get("turn_id"),
+                "transcript_path": payload.get("transcript_path"),
                 "updated_at": time.time(),
             },
             ensure_ascii=False,
         ),
         encoding="utf-8",
     )
+
+
+def event_log_record(
+    *,
+    agent: str,
+    event: str,
+    payload: dict,
+    previous_state: str | None,
+    state: str | None,
+) -> dict:
+    response = payload.get("tool_response")
+    if isinstance(response, str):
+        try:
+            response = json.loads(response)
+        except json.JSONDecodeError:
+            response = None
+
+    tool_result: dict[str, object] = {}
+    if isinstance(response, dict):
+        for key in ("success", "exit_code", "exitCode"):
+            if key in response:
+                tool_result[key] = response[key]
+
+    return {
+        "time": time.time(),
+        "agent": agent,
+        "event": event,
+        "state": state,
+        "previous_state": previous_state,
+        "session_id": payload.get("session_id"),
+        "turn_id": payload.get("turn_id"),
+        "transcript_path": payload.get("transcript_path"),
+        "tool_name": payload.get("tool_name"),
+        "notification_type": payload.get("notification_type"),
+        "permission_mode": payload.get("permission_mode"),
+        "stop_hook_active": payload.get("stop_hook_active"),
+        "payload_keys": sorted(payload.keys()),
+        "tool_result": tool_result,
+    }
+
+
+def write_event_log(log_path: str, record: dict) -> None:
+    path = Path(log_path).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as log:
+        log.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -168,7 +229,9 @@ def main(argv: list[str] | None = None) -> int:
     event = text_field(payload, "hook_event_name", "event", "type")
     state_path = os.environ.get("AGENT_LAMP_STATE_FILE", DEFAULT_STATE_FILE)
     previous_state = read_previous_state(state_path)
-    show_permission_requests = os.environ.get("AGENT_LAMP_SHOW_PERMISSION_REQUESTS") == "1"
+    show_permission_requests = os.environ.get("AGENT_LAMP_SHOW_PERMISSION_REQUESTS", "1") != "0"
+    if os.environ.get("AGENT_LAMP_HIDE_PERMISSION_REQUESTS") == "1":
+        show_permission_requests = False
     state = state_for_event(
         args.agent,
         event,
@@ -176,6 +239,20 @@ def main(argv: list[str] | None = None) -> int:
         previous_state,
         show_permission_requests=show_permission_requests,
     )
+    event_log_path = os.environ.get("AGENT_LAMP_EVENT_LOG", DEFAULT_EVENT_LOG)
+    try:
+        write_event_log(
+            event_log_path,
+            event_log_record(
+                agent=args.agent,
+                event=event,
+                payload=payload,
+                previous_state=previous_state,
+                state=state,
+            ),
+        )
+    except Exception:
+        pass
     if not state:
         return 0
 
@@ -186,7 +263,15 @@ def main(argv: list[str] | None = None) -> int:
     if queue_path:
         try:
             write_queue(queue_path, line)
-            write_state_file(state_path, state=state, agent=args.agent, repo=repo, message=message, event=event)
+            write_state_file(
+                state_path,
+                state=state,
+                agent=args.agent,
+                repo=repo,
+                message=message,
+                event=event,
+                payload=payload,
+            )
         except Exception:
             pass
         return 0
@@ -207,7 +292,15 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
-        write_state_file(state_path, state=state, agent=args.agent, repo=repo, message=message, event=event)
+        write_state_file(
+            state_path,
+            state=state,
+            agent=args.agent,
+            repo=repo,
+            message=message,
+            event=event,
+            payload=payload,
+        )
     except Exception:
         pass
 

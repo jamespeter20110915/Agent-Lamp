@@ -30,17 +30,17 @@ String labelForState(const String& state) {
 }
 
 uint16_t backgroundForState(const String& state) {
-  if (state == "running") return M5.Display.color565(245, 185, 40);
-  if (state == "waiting") return M5.Display.color565(255, 205, 70);
-  if (state == "ok") return M5.Display.color565(24, 140, 82);
-  if (state == "error") return M5.Display.color565(190, 40, 44);
-  if (state == "idle") return M5.Display.color565(28, 110, 76);
-  return M5.Display.color565(45, 48, 54);
+  if (state == "running") return M5.Display.color565(245, 158, 11);
+  if (state == "waiting") return M5.Display.color565(37, 99, 235);
+  if (state == "ok") return M5.Display.color565(22, 163, 74);
+  if (state == "error") return M5.Display.color565(220, 38, 38);
+  if (state == "idle") return M5.Display.color565(31, 41, 55);
+  return M5.Display.color565(24, 24, 27);
 }
 
 uint16_t textForState(const String& state) {
-  if (state == "running" || state == "waiting") {
-    return M5.Display.color565(26, 22, 12);
+  if (state == "running") {
+    return M5.Display.color565(36, 26, 8);
   }
   return M5.Display.color565(255, 255, 255);
 }
@@ -107,10 +107,20 @@ void applyState(String state, String agent, String repo, String message) {
   repo.trim();
   message.trim();
 
+  String nextAgent = agent.length() ? agent : "agent";
+  String nextRepo = repo.length() ? repo : "workspace";
+  String nextMessage = message.length() ? message : defaultMessageForState(state);
+  if (current.state == state && current.agent == nextAgent &&
+      current.repo == nextRepo && current.message == nextMessage) {
+    Serial.print("ok ");
+    Serial.println(current.state);
+    return;
+  }
+
   current.state = state;
-  current.agent = agent.length() ? agent : "agent";
-  current.repo = repo.length() ? repo : "workspace";
-  current.message = message.length() ? message : defaultMessageForState(state);
+  current.agent = nextAgent;
+  current.repo = nextRepo;
+  current.message = nextMessage;
   current.updatedAtMs = millis();
   drawScreen();
 

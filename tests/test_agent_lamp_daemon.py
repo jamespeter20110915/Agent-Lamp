@@ -7,10 +7,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 
 from agent_lamp_daemon import (  # noqa: E402
     PersistentSerialSender,
+    abort_status_from_state,
     parse_status_line,
     should_refresh_status,
     should_timeout_running,
     status_line,
+    transcript_has_turn_aborted,
     timeout_line,
 )
 
@@ -140,6 +142,46 @@ class StatusLineTests(unittest.TestCase):
         self.assertIsNotNone(status)
         assert status is not None
         self.assertEqual(timeout_line(status), "set\tok\tcodex\tAgent-Lamp\tNo active Codex event")
+
+    def test_detects_turn_aborted_in_transcript(self) -> None:
+        path = Path("/private/tmp/agent-lamp-test-transcript.jsonl")
+        try:
+            path.write_text(
+                '{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"turn-1"}}\n',
+                encoding="utf-8",
+            )
+
+            self.assertTrue(transcript_has_turn_aborted(str(path), "turn-1"))
+            self.assertFalse(transcript_has_turn_aborted(str(path), "turn-2"))
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_builds_interrupted_status_from_state_file(self) -> None:
+        state_path = Path("/private/tmp/agent-lamp-test-state.json")
+        transcript_path = Path("/private/tmp/agent-lamp-test-transcript.jsonl")
+        try:
+            transcript_path.write_text(
+                '{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"turn-1"}}\n',
+                encoding="utf-8",
+            )
+            state_path.write_text(
+                (
+                    '{"state":"running","agent":"codex","repo":"Agent-Lamp",'
+                    '"message":"Agent is working","turn_id":"turn-1",'
+                    f'"transcript_path":"{transcript_path}"}}'
+                ),
+                encoding="utf-8",
+            )
+
+            status = abort_status_from_state(str(state_path), now=42.0)
+
+            self.assertIsNotNone(status)
+            assert status is not None
+            self.assertEqual(status.state, "ok")
+            self.assertEqual(status.message, "Turn interrupted")
+        finally:
+            state_path.unlink(missing_ok=True)
+            transcript_path.unlink(missing_ok=True)
 
     def test_running_timeout_only_applies_to_stale_running_state(self) -> None:
         running = parse_status_line("set\trunning\tcodex\tAgent-Lamp\tWorking", 10.0)

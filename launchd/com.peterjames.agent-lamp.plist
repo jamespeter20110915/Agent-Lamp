@@ -11,9 +11,9 @@
     <string>--port</string>
     <string>/dev/cu.usbmodem1101</string>
     <string>--running-timeout</string>
-    <string>90</string>
+    <string>0</string>
     <string>--refresh-interval</string>
-    <string>5</string>
+    <string>0</string>
   </array>
 
   <key>WorkingDirectory</key>
