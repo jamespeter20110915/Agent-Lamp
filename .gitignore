@@ -1,0 +1,29 @@
+.DS_Store
+
+# Local Codex app/session config
+.codex/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# PlatformIO / Arduino build output
+.pio/
+.pioenvs/
+.piolibdeps/
+build/
+*.elf
+*.bin
+*.hex
+*.map
+
+# Local editor state
+.vscode/
+.idea/
+
+# Logs and local env
+*.log
+.env
+.env.*
