@@ -6,12 +6,15 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 
 from agent_lamp_daemon import (  # noqa: E402
+    CompletionSoundPlayer,
     HttpSender,
     PersistentSerialSender,
     abort_status_from_state,
     completed_status_from_state,
     parse_status_line,
+    resolve_done_sound,
     rewind_if_queue_was_truncated,
+    should_play_completion_sound,
     should_refresh_status,
     should_timeout_running,
     status_line,
@@ -134,6 +137,39 @@ class HttpSenderTests(unittest.TestCase):
         http_sender.close()
 
         self.assertEqual(calls, [("http://agent-lamp.local", "set\trunning\tcodex\tAgent-Lamp\tWorking", 2.5)])
+
+
+class CompletionSoundTests(unittest.TestCase):
+    def test_resolves_named_macos_system_sound(self) -> None:
+        if not Path("/System/Library/Sounds/Glass.aiff").exists():
+            self.skipTest("macOS system sound not available")
+
+        self.assertEqual(resolve_done_sound("Glass"), Path("/System/Library/Sounds/Glass.aiff"))
+
+    def test_off_values_disable_completion_sound(self) -> None:
+        self.assertIsNone(resolve_done_sound("off"))
+        self.assertIsNone(resolve_done_sound("none"))
+
+    def test_plays_custom_sound_with_afplay(self) -> None:
+        commands: list[list[str]] = []
+        player = CompletionSoundPlayer("/tmp/custom-done.wav", process_launcher=commands.append)
+
+        player.play()
+
+        self.assertEqual(commands, [["afplay", "/tmp/custom-done.wav"]])
+
+    def test_completion_sound_only_plays_on_active_to_ok_transition(self) -> None:
+        running = parse_status_line("set\trunning\tcodex\tAgent-Lamp\tWorking", 1.0)
+        waiting = parse_status_line("set\twaiting\tcodex\tAgent-Lamp\tApproval", 1.0)
+        ok = parse_status_line("set\tok\tcodex\tAgent-Lamp\tDone", 2.0)
+        idle = parse_status_line("set\tidle\tcodex\tAgent-Lamp\tReady", 2.0)
+
+        self.assertTrue(should_play_completion_sound(running, ok))
+        self.assertTrue(should_play_completion_sound(waiting, ok))
+        self.assertFalse(should_play_completion_sound(ok, ok))
+        self.assertFalse(should_play_completion_sound(idle, ok))
+        self.assertFalse(should_play_completion_sound(running, waiting))
+        self.assertFalse(should_play_completion_sound(None, ok))
 
 
 class StatusLineTests(unittest.TestCase):

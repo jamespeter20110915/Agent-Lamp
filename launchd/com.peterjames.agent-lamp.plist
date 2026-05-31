@@ -16,6 +16,8 @@
     <string>0</string>
     <string>--refresh-interval</string>
     <string>5</string>
+    <string>--done-sound</string>
+    <string>Glass</string>
   </array>
 
   <key>WorkingDirectory</key>

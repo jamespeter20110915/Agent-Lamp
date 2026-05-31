@@ -208,11 +208,28 @@ If `pyserial` is installed, the CLI uses it. If not, it writes directly to the s
 
 ## Claude Code Hook
 
-Use `hooks/claude/settings.example.json` as the reference. Copy the `hooks` block into your Claude Code settings and keep the command path absolute:
+Agent-Lamp includes project-level Claude Code settings at:
 
 ```text
-/Users/peterjames/study/Code/Agent-Lamp/hooks/claude/status-hook.sh
+.claude/settings.json
 ```
+
+Start Claude Code from this repository so it loads that project config:
+
+```bash
+cd /Users/peterjames/study/Code/Agent-Lamp
+claude
+```
+
+If you are already inside a Claude Code session, restart it after changing hook
+settings. The hook writes status lines to the same queue bridge used by Codex:
+
+```text
+/private/tmp/agent-lamp-queue.tsv
+```
+
+Use `hooks/claude/settings.example.json` as the reference if you want to copy
+the same hook block into a global Claude Code settings file.
 
 ## Codex Hook
 
@@ -225,7 +242,7 @@ Start the bridge manually in Terminal:
 
 ```bash
 cd /Users/peterjames/study/Code/Agent-Lamp
-./host/agent-lamp-daemon --transport http --lamp-url http://agent-lamp.local
+./host/agent-lamp-daemon --transport http --lamp-url http://agent-lamp.local --done-sound Glass
 ```
 
 Codex hooks only append status lines to the queue; the bridge is the process
@@ -261,6 +278,19 @@ incorrectly mark active work as `ok`. The timeout is disabled by default:
 ```bash
 ./host/agent-lamp-daemon --transport http --lamp-url http://agent-lamp.local --running-timeout 0 --refresh-interval 5
 ```
+
+To use a custom completion sound, pass a path to an audio file supported by
+macOS `afplay`:
+
+```bash
+./host/agent-lamp-daemon --transport http --lamp-url http://agent-lamp.local --done-sound /Users/peterjames/Music/agent-done.wav
+```
+
+You can also use a macOS system sound name, such as `Glass`, `Ping`, or
+`Submarine`. Set `AGENT_LAMP_DONE_SOUND` instead of passing `--done-sound` if
+you prefer environment configuration. Set `--done-sound off` to disable audio.
+The sound only plays when an agent moves from `running` or `waiting` to `ok`;
+periodic refreshes and restored states do not replay it.
 
 You can check whether hooks are writing status lines with:
 
@@ -310,3 +340,44 @@ The practical bring-up order is:
 7. Enable one hook integration at a time.
 
 Codex failure detection is based on `PostToolUse` responses with a non-zero `exit_code` or `success: false`. Other Codex failures may still need more event-specific mapping after observing real hook payloads.
+
+## Troubleshooting
+
+Check whether Claude Code or Codex hooks are firing:
+
+```bash
+tail -f /private/tmp/agent-lamp-events.jsonl
+```
+
+Check whether hooks are writing queue entries:
+
+```bash
+tail -f /private/tmp/agent-lamp-queue.tsv
+```
+
+Check whether the daemon can reach the Tab5:
+
+```bash
+tail -f /private/tmp/agent-lamp-daemon.log /private/tmp/agent-lamp-daemon.err
+```
+
+If the event log and queue show `claude` or `codex` entries but the Tab5 does
+not change, test the wireless target directly:
+
+```bash
+./host/agent-lamp ping --transport http --lamp-url http://agent-lamp.local
+```
+
+If `agent-lamp.local` is not reachable, use the IP address shown on the bottom
+of the Tab5 screen:
+
+```bash
+./host/agent-lamp ping --transport http --lamp-url http://192.168.3.123
+./host/agent-lamp-daemon --transport http --lamp-url http://192.168.3.123 --running-timeout 0 --refresh-interval 5
+```
+
+If no USB serial port is listed, the Mac cannot currently see the Tab5 over USB:
+
+```bash
+./host/agent-lamp ports
+```

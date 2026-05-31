@@ -7,13 +7,17 @@ import argparse
 from collections.abc import Callable
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
+import subprocess
 import time
 from typing import TextIO
 
 from agent_lamp import choose_transport, http_base_url, list_ports, pick_port, send_http
 
 DEFAULT_STATE_FILE = "/private/tmp/agent-lamp-state.json"
+DEFAULT_SYSTEM_SOUND_DIR = Path("/System/Library/Sounds")
+SOUND_OFF_VALUES = {"", "0", "false", "no", "none", "off"}
 
 
 def resolve_serial_port(configured_port: str | None) -> str:
@@ -107,6 +111,28 @@ class HttpSender:
         return
 
 
+class CompletionSoundPlayer:
+    def __init__(
+        self,
+        sound: str | None,
+        *,
+        process_launcher: Callable[[list[str]], object] | None = None,
+    ) -> None:
+        self.sound_path = resolve_done_sound(sound)
+        self.process_launcher = process_launcher or self._launch
+
+    def _launch(self, command: list[str]) -> object:
+        return subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def play(self) -> None:
+        if self.sound_path is None:
+            return
+        try:
+            self.process_launcher(["afplay", str(self.sound_path)])
+        except Exception as exc:
+            print(f"done sound failed: {exc}", flush=True)
+
+
 @dataclass
 class LastStatus:
     state: str
@@ -133,6 +159,31 @@ def parse_status_line(line: str, updated_at: float) -> LastStatus | None:
         repo=fields[3].strip() or "workspace",
         message=fields[4].strip() if len(fields) > 4 else "",
         updated_at=updated_at,
+    )
+
+
+def resolve_done_sound(value: str | None) -> Path | None:
+    raw = (value or os.environ.get("AGENT_LAMP_DONE_SOUND") or "").strip()
+    if raw.lower() in SOUND_OFF_VALUES:
+        return None
+
+    candidate = Path(raw).expanduser()
+    if candidate.exists() or candidate.is_absolute() or "/" in raw:
+        return candidate
+
+    system_sound = DEFAULT_SYSTEM_SOUND_DIR / f"{raw}.aiff"
+    if system_sound.exists():
+        return system_sound
+
+    return candidate
+
+
+def should_play_completion_sound(previous: LastStatus | None, current: LastStatus | None) -> bool:
+    return (
+        current is not None
+        and current.state == "ok"
+        and previous is not None
+        and previous.state in {"running", "waiting"}
     )
 
 
@@ -323,6 +374,7 @@ def follow_queue(
     running_timeout: float,
     refresh_interval: float,
     abort_check_interval: float,
+    done_sound: str | None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch()
@@ -340,6 +392,7 @@ def follow_queue(
     last_status = restore_status_from_state(state_path, now)
     last_sent_at = time.monotonic()
     last_abort_check_at = 0.0
+    sound_player = CompletionSoundPlayer(done_sound)
 
     try:
         with path.open("r", encoding="utf-8") as queue:
@@ -369,12 +422,15 @@ def follow_queue(
                         finished_status = finished_status_from_state(state_path, now)
                         if finished_status is not None:
                             command = status_line(finished_status)
+                            previous_status = last_status
                             try:
                                 sender.send(command)
                                 print(f"sent: {command}", flush=True)
                                 write_state_file(state_path, finished_status, event="TurnFinished")
                                 last_status = finished_status
                                 last_sent_at = now
+                                if should_play_completion_sound(previous_status, finished_status):
+                                    sound_player.play()
                             except Exception as exc:
                                 print(f"send failed: {exc}", flush=True)
                     elif should_timeout_running(last_status, now, running_timeout):
@@ -403,6 +459,7 @@ def follow_queue(
 
                 now = time.monotonic()
                 parsed_status = parse_status_line(command, now)
+                previous_status = last_status
                 try:
                     sender.send(command)
                     print(f"sent: {command}", flush=True)
@@ -410,6 +467,8 @@ def follow_queue(
                 except Exception as exc:
                     print(f"send failed: {exc}", flush=True)
                     last_status = parsed_status or last_status
+                if should_play_completion_sound(previous_status, parsed_status):
+                    sound_player.play()
                 last_sent_at = now
     finally:
         sender.close()
@@ -458,6 +517,14 @@ def main() -> int:
         default=0.5,
         help="Seconds between checks for Codex turn_aborted events in the transcript.",
     )
+    parser.add_argument(
+        "--done-sound",
+        default=None,
+        help=(
+            "Optional sound to play when an agent transitions from running/waiting to ok. "
+            "Use a file path, a macOS system sound name like Glass, or off."
+        ),
+    )
     args = parser.parse_args()
 
     try:
@@ -475,6 +542,7 @@ def main() -> int:
             running_timeout=args.running_timeout,
             refresh_interval=args.refresh_interval,
             abort_check_interval=args.abort_check_interval,
+            done_sound=args.done_sound,
         )
     except KeyboardInterrupt:
         print("\nagent-lamp bridge stopped", flush=True)
