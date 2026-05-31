@@ -27,17 +27,18 @@ class HookStatusTests(unittest.TestCase):
 
         self.assertEqual(state_for_event("codex", "PostToolUse", payload, previous_state="waiting"), "running")
 
-    def test_codex_permission_request_shows_waiting_by_default(self) -> None:
-        self.assertEqual(state_for_event("codex", "PermissionRequest", {"tool_name": "Bash"}), "waiting")
+    def test_codex_permission_request_is_hidden_by_default(self) -> None:
+        self.assertIsNone(state_for_event("codex", "PermissionRequest", {"tool_name": "Bash"}))
 
-    def test_codex_permission_request_can_be_hidden_explicitly(self) -> None:
-        self.assertIsNone(
+    def test_codex_permission_request_can_be_shown_explicitly(self) -> None:
+        self.assertEqual(
             state_for_event(
                 "codex",
                 "PermissionRequest",
                 {"tool_name": "Bash"},
-                show_permission_requests=False,
-            )
+                show_permission_requests=True,
+            ),
+            "waiting",
         )
 
     def test_failed_post_tool_use_reports_error(self) -> None:
@@ -50,10 +51,20 @@ class HookStatusTests(unittest.TestCase):
 
         self.assertEqual(message_for_payload(payload, "ok"), "Agent finished")
 
-    def test_user_prompt_submit_uses_prompt_as_running_message(self) -> None:
+    def test_user_prompt_submit_uses_generic_running_message(self) -> None:
         payload = {"hook_event_name": "UserPromptSubmit", "prompt": "请测试一下状态灯"}
 
-        self.assertEqual(message_for_payload(payload, "running"), "请测试一下状态灯")
+        self.assertEqual(message_for_payload(payload, "running"), "Agent is working")
+
+    def test_user_prompt_submit_redacts_sensitive_values(self) -> None:
+        payload = {"hook_event_name": "Notification", "message": "SSID: Hmds16，密码：example-password"}
+
+        self.assertEqual(message_for_payload(payload, "waiting"), "SSID: Hmds16，密码：[redacted]")
+
+    def test_tool_use_running_message_can_use_tool_name(self) -> None:
+        payload = {"hook_event_name": "PreToolUse", "prompt": "请测试一下状态灯", "tool_name": "Bash"}
+
+        self.assertEqual(message_for_payload(payload, "running"), "Bash")
 
     def test_protocol_line_sanitizes_and_truncates_fields(self) -> None:
         line = protocol_line("codex", "Agent-Lamp", "ok", "line 1\n" + ("x" * 200))

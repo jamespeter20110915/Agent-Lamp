@@ -6,12 +6,16 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 
 from agent_lamp_daemon import (  # noqa: E402
+    HttpSender,
     PersistentSerialSender,
     abort_status_from_state,
+    completed_status_from_state,
     parse_status_line,
+    rewind_if_queue_was_truncated,
     should_refresh_status,
     should_timeout_running,
     status_line,
+    transcript_has_task_complete,
     transcript_has_turn_aborted,
     timeout_line,
 )
@@ -117,6 +121,21 @@ class PersistentSerialSenderTests(unittest.TestCase):
         self.assertEqual(opened_ports, ["/dev/old", "/dev/new"])
 
 
+class HttpSenderTests(unittest.TestCase):
+    def test_sends_status_lines_to_configured_lamp_url(self) -> None:
+        calls: list[tuple[str, str, float]] = []
+
+        def sender(url: str, line: str, timeout: float) -> None:
+            calls.append((url, line, timeout))
+
+        http_sender = HttpSender("http://agent-lamp.local", 2.5, http_sender=sender)
+
+        http_sender.send("set\trunning\tcodex\tAgent-Lamp\tWorking")
+        http_sender.close()
+
+        self.assertEqual(calls, [("http://agent-lamp.local", "set\trunning\tcodex\tAgent-Lamp\tWorking", 2.5)])
+
+
 class StatusLineTests(unittest.TestCase):
     def test_parses_protocol_status_line(self) -> None:
         status = parse_status_line("set\trunning\tcodex\tAgent-Lamp\tBash", 12.5)
@@ -183,6 +202,46 @@ class StatusLineTests(unittest.TestCase):
             state_path.unlink(missing_ok=True)
             transcript_path.unlink(missing_ok=True)
 
+    def test_detects_task_complete_in_transcript(self) -> None:
+        path = Path("/private/tmp/agent-lamp-test-transcript.jsonl")
+        try:
+            path.write_text(
+                '{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1"}}\n',
+                encoding="utf-8",
+            )
+
+            self.assertTrue(transcript_has_task_complete(str(path), "turn-1"))
+            self.assertFalse(transcript_has_task_complete(str(path), "turn-2"))
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_builds_completed_status_from_state_file(self) -> None:
+        state_path = Path("/private/tmp/agent-lamp-test-state.json")
+        transcript_path = Path("/private/tmp/agent-lamp-test-transcript.jsonl")
+        try:
+            transcript_path.write_text(
+                '{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1"}}\n',
+                encoding="utf-8",
+            )
+            state_path.write_text(
+                (
+                    '{"state":"running","agent":"codex","repo":"Agent-Lamp",'
+                    '"message":"Agent is working","turn_id":"turn-1",'
+                    f'"transcript_path":"{transcript_path}"}}'
+                ),
+                encoding="utf-8",
+            )
+
+            status = completed_status_from_state(str(state_path), now=42.0)
+
+            self.assertIsNotNone(status)
+            assert status is not None
+            self.assertEqual(status.state, "ok")
+            self.assertEqual(status.message, "Agent finished")
+        finally:
+            state_path.unlink(missing_ok=True)
+            transcript_path.unlink(missing_ok=True)
+
     def test_running_timeout_only_applies_to_stale_running_state(self) -> None:
         running = parse_status_line("set\trunning\tcodex\tAgent-Lamp\tWorking", 10.0)
         ok = parse_status_line("set\tok\tcodex\tAgent-Lamp\tDone", 10.0)
@@ -199,6 +258,19 @@ class StatusLineTests(unittest.TestCase):
         self.assertFalse(should_refresh_status(status, now=14.9, last_sent_at=10.0, refresh_interval=5.0))
         self.assertFalse(should_refresh_status(status, now=15.0, last_sent_at=10.0, refresh_interval=0.0))
         self.assertFalse(should_refresh_status(None, now=15.0, last_sent_at=10.0, refresh_interval=5.0))
+
+    def test_rewinds_queue_after_log_truncation(self) -> None:
+        path = Path("/private/tmp/agent-lamp-test-queue-truncate.tsv")
+        try:
+            path.write_text("set\trunning\tcodex\tAgent-Lamp\tWorking\n", encoding="utf-8")
+            with path.open("r", encoding="utf-8") as queue:
+                queue.seek(0, 2)
+                path.write_text("set\tok\tcodex\tAgent-Lamp\tDone\n", encoding="utf-8")
+
+                self.assertTrue(rewind_if_queue_was_truncated(queue, path))
+                self.assertEqual(queue.readline(), "set\tok\tcodex\tAgent-Lamp\tDone\n")
+        finally:
+            path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

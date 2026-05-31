@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -21,6 +22,10 @@ STATE_MESSAGES = {
 MAX_FIELD_LENGTH = 120
 DEFAULT_STATE_FILE = "/private/tmp/agent-lamp-state.json"
 DEFAULT_EVENT_LOG = "/private/tmp/agent-lamp-events.jsonl"
+SENSITIVE_PATTERNS = (
+    re.compile(r"((?:password|passwd|pwd|secret|token|api[_ -]?key)\s*[:=：]\s*)\S+", re.IGNORECASE),
+    re.compile(r"((?:密码|口令|密钥|令牌)\s*[:=：]\s*)\S+"),
+)
 
 
 def text_field(payload: dict, *names: str) -> str:
@@ -63,7 +68,7 @@ def state_for_event(
     payload: dict,
     previous_state: str | None = None,
     *,
-    show_permission_requests: bool = True,
+    show_permission_requests: bool = False,
 ) -> str | None:
     if event.endswith("Failure") or event in {"Error", "ToolFailure"}:
         return "error"
@@ -97,17 +102,26 @@ def state_for_event(
 
 
 def message_for_payload(payload: dict, state: str) -> str:
-    return (
+    field_names = (
+        ("message", "notification", "notification_type", "tool_name")
+        if state == "running"
+        else ("message", "prompt", "notification", "notification_type", "tool_name")
+    )
+    message = (
         text_field(
             payload,
-            "message",
-            "prompt",
-            "notification",
-            "notification_type",
-            "tool_name",
+            *field_names,
         )
         or STATE_MESSAGES[state]
     )
+    return redact_sensitive_text(message)
+
+
+def redact_sensitive_text(value: str) -> str:
+    redacted = value
+    for pattern in SENSITIVE_PATTERNS:
+        redacted = pattern.sub(lambda match: match.group(1) + "[redacted]", redacted)
+    return redacted
 
 
 def sanitize_protocol_field(value: str, max_len: int = MAX_FIELD_LENGTH) -> str:
@@ -229,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
     event = text_field(payload, "hook_event_name", "event", "type")
     state_path = os.environ.get("AGENT_LAMP_STATE_FILE", DEFAULT_STATE_FILE)
     previous_state = read_previous_state(state_path)
-    show_permission_requests = os.environ.get("AGENT_LAMP_SHOW_PERMISSION_REQUESTS", "1") != "0"
+    show_permission_requests = os.environ.get("AGENT_LAMP_SHOW_PERMISSION_REQUESTS", "0") == "1"
     if os.environ.get("AGENT_LAMP_HIDE_PERMISSION_REQUESTS") == "1":
         show_permission_requests = False
     state = state_for_event(

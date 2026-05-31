@@ -2,6 +2,7 @@
 
 # Local Codex app/session config
 .codex/
+.codegraph/
 
 # Python
 __pycache__/
@@ -27,3 +28,6 @@ build/
 *.log
 .env
 .env.*
+
+# Local firmware Wi-Fi credentials
+firmware/**/agent_lamp_secrets.h

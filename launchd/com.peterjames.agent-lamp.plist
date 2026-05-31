@@ -8,12 +8,14 @@
   <key>ProgramArguments</key>
   <array>
     <string>/Users/peterjames/study/Code/Agent-Lamp/host/agent-lamp-daemon</string>
-    <string>--port</string>
-    <string>/dev/cu.usbmodem1101</string>
+    <string>--transport</string>
+    <string>http</string>
+    <string>--lamp-url</string>
+    <string>http://agent-lamp.local</string>
     <string>--running-timeout</string>
     <string>0</string>
     <string>--refresh-interval</string>
-    <string>0</string>
+    <string>5</string>
   </array>
 
   <key>WorkingDirectory</key>

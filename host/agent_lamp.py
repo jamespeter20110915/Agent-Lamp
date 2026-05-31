@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Send status updates to the M5Stack Tab5 agent lamp over USB serial."""
+"""Send status updates to the M5Stack Tab5 agent lamp."""
 
 from __future__ import annotations
 
@@ -9,6 +9,9 @@ import os
 from pathlib import Path
 import sys
 import time
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
 
 
 VALID_STATES = {"idle", "running", "waiting", "ok", "error"}
@@ -32,6 +35,8 @@ PORT_PATTERNS = (
     "/dev/cu.wchusbserial*",
     "/dev/cu.SLAB_USBtoUART*",
 )
+TRANSPORTS = {"auto", "serial", "http"}
+DEFAULT_HTTP_PORT = 80
 
 
 def normalize_state(value: str) -> str:
@@ -60,6 +65,44 @@ def list_ports() -> list[str]:
     return sorted(set(ports))
 
 
+def normalize_http_base_url(value: str) -> str:
+    candidate = value.strip().rstrip("/")
+    if not candidate:
+        raise SystemExit("Lamp URL is empty.")
+    if "://" not in candidate:
+        candidate = f"http://{candidate}"
+
+    parsed = urlsplit(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise SystemExit(f"Invalid lamp URL {value!r}. Use a value like http://agent-lamp.local.")
+    return candidate
+
+
+def http_base_url(explicit_url: str | None = None, host: str | None = None, port: int = DEFAULT_HTTP_PORT) -> str | None:
+    raw_url = explicit_url or os.environ.get("AGENT_LAMP_URL")
+    if raw_url:
+        return normalize_http_base_url(raw_url)
+
+    raw_host = host or os.environ.get("AGENT_LAMP_HOST")
+    if not raw_host:
+        return None
+    if "://" in raw_host:
+        return normalize_http_base_url(raw_host)
+
+    if ":" in raw_host or port == 80:
+        return normalize_http_base_url(raw_host)
+    return normalize_http_base_url(f"{raw_host}:{port}")
+
+
+def choose_transport(requested: str | None, lamp_url: str | None = None, lamp_host: str | None = None) -> str:
+    transport = (requested or os.environ.get("AGENT_LAMP_TRANSPORT") or "auto").strip().lower()
+    if transport not in TRANSPORTS:
+        raise SystemExit(f"Unknown transport {transport!r}. Use one of: {', '.join(sorted(TRANSPORTS))}")
+    if transport == "auto":
+        return "http" if http_base_url(lamp_url, lamp_host) else "serial"
+    return transport
+
+
 def pick_port(explicit_port: str | None) -> str:
     if explicit_port:
         return explicit_port
@@ -80,6 +123,28 @@ def pick_port(explicit_port: str | None) -> str:
             + joined
         )
     return ports[0]
+
+
+def send_http(base_url: str, line: str, timeout: float) -> None:
+    payload = (line.rstrip("\n") + "\n").encode("utf-8")
+    request = Request(
+        base_url.rstrip("/") + "/set",
+        data=payload,
+        headers={"Content-Type": "text/plain; charset=utf-8"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            if response.status >= 400:
+                raise SystemExit(f"Lamp returned HTTP {response.status}.")
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace").strip()
+        suffix = f": {body}" if body else ""
+        raise SystemExit(f"Lamp returned HTTP {exc.code}{suffix}") from exc
+    except URLError as exc:
+        raise SystemExit(f"Could not reach lamp at {base_url}: {exc.reason}") from exc
+    except OSError as exc:
+        raise SystemExit(f"Could not reach lamp at {base_url}: {exc}") from exc
 
 
 def send_with_pyserial(port: str, baud: int, payload: bytes, open_delay: float) -> bool:
@@ -108,6 +173,19 @@ def send_serial(port: str, baud: int, line: str, open_delay: float) -> None:
     send_direct(port, payload, open_delay)
 
 
+def send_status(args: argparse.Namespace, line: str) -> None:
+    transport = choose_transport(args.transport, args.lamp_url, args.lamp_host)
+    if transport == "http":
+        base_url = http_base_url(args.lamp_url, args.lamp_host)
+        if not base_url:
+            raise SystemExit("HTTP transport needs --lamp-url, --lamp-host, AGENT_LAMP_URL, or AGENT_LAMP_HOST.")
+        send_http(base_url, line, args.http_timeout)
+        return
+
+    port = pick_port(args.port)
+    send_serial(port, args.baud, line, args.open_delay)
+
+
 def make_set_line(args: argparse.Namespace) -> str:
     state = normalize_state(args.state)
     agent = sanitize_field(args.agent or os.environ.get("AGENT_LAMP_AGENT") or "agent")
@@ -117,9 +195,18 @@ def make_set_line(args: argparse.Namespace) -> str:
 
 
 def add_common_transport_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--transport",
+        choices=sorted(TRANSPORTS),
+        default=None,
+        help="Transport to use. auto uses HTTP when a lamp URL/host is configured, otherwise serial.",
+    )
     parser.add_argument("--port", help="Serial port, for example /dev/cu.usbmodem1101.")
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--open-delay", type=float, default=0.15)
+    parser.add_argument("--lamp-url", help="Wireless lamp base URL, for example http://agent-lamp.local.")
+    parser.add_argument("--lamp-host", help="Wireless lamp host name or IP address.")
+    parser.add_argument("--http-timeout", type=float, default=2.0)
     parser.add_argument("--dry-run", action="store_true", help="Print the protocol line without sending it.")
 
 
@@ -155,8 +242,7 @@ def main(argv: list[str] | None = None) -> int:
         print(line)
         return 0
 
-    port = pick_port(args.port)
-    send_serial(port, args.baud, line, args.open_delay)
+    send_status(args, line)
     return 0
 
 

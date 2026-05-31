@@ -2,10 +2,17 @@
 
 Agent-Lamp is an M5Stack Tab5 agent status indicator for Claude Code and Codex.
 
-The first version uses USB serial because it works without Wi-Fi setup. The Mac sends a compact status line to the Tab5, and the Tab5 renders a full-screen state:
+The next version is wireless by default: the Tab5 joins Wi-Fi, exposes a tiny
+HTTP status endpoint, and the Mac sends compact status lines over the local
+network. USB serial remains available for first flash, recovery, and fallback
+debugging, but daily desk use should not need a visible USB-C connection.
 
-- `idle` / `ok`: green
-- `running` / `waiting`: yellow
+The Tab5 renders a full-screen state:
+
+- `idle`: dark gray
+- `running`: amber
+- `waiting`: blue
+- `ok`: green
 - `error`: red
 
 Project convention: use `Agent-Lamp` for the repository and display name, and keep `agent-lamp` for local command/script names.
@@ -102,9 +109,81 @@ or the host protocol:
 set<TAB>running<TAB>codex<TAB>Agent-Lamp<TAB>Agent is working
 ```
 
+The same protocol works over HTTP after Wi-Fi is configured:
+
+```text
+POST http://agent-lamp.local/set
+Content-Type: text/plain
+
+set<TAB>running<TAB>codex<TAB>Agent-Lamp<TAB>Agent is working
+```
+
+Useful device endpoints:
+
+```text
+POST /set      plain text protocol line
+GET  /ping     returns pong
+GET  /status   returns the current protocol line
+```
+
+## Wireless Setup
+
+Create a local Wi-Fi secrets header before building firmware. Do not commit the
+real file.
+
+For PlatformIO:
+
+```bash
+cp firmware/tab5-agent-lamp/include/agent_lamp_secrets.example.h firmware/tab5-agent-lamp/include/agent_lamp_secrets.h
+```
+
+For Arduino IDE:
+
+```bash
+cp firmware/tab5_agent_lamp_arduino/agent_lamp_secrets.example.h firmware/tab5_agent_lamp_arduino/agent_lamp_secrets.h
+```
+
+Edit the copied file:
+
+```cpp
+#define AGENT_LAMP_WIFI_SSID "Your Wi-Fi SSID"
+#define AGENT_LAMP_WIFI_PASSWORD "Your Wi-Fi password"
+#define AGENT_LAMP_HOSTNAME "agent-lamp"
+```
+
+Flash once over USB-C. After boot, the bottom of the Tab5 screen shows the HTTP
+target, usually:
+
+```text
+http://agent-lamp.local/set
+```
+
+If mDNS is not available on your network, use the IP shown on the Tab5 instead.
+
 ## Host CLI
 
-List likely ports:
+Set the wireless target:
+
+```bash
+export AGENT_LAMP_URL=http://agent-lamp.local
+```
+
+Send test states:
+
+```bash
+./host/agent-lamp set running --agent codex --repo Agent-Lamp --message "Working"
+./host/agent-lamp set waiting --agent codex --repo Agent-Lamp --message "Needs approval"
+./host/agent-lamp set ok --agent codex --repo Agent-Lamp --message "Done"
+./host/agent-lamp set error --agent codex --repo Agent-Lamp --message "Failed"
+```
+
+You can also pass the wireless target directly:
+
+```bash
+./host/agent-lamp set running --transport http --lamp-url http://agent-lamp.local
+```
+
+USB serial is still available as a fallback. List likely ports:
 
 ```bash
 ./host/agent-lamp ports
@@ -116,13 +195,13 @@ If more than one port is listed, set the one for Tab5:
 export AGENT_LAMP_PORT=/dev/cu.usbmodem1101
 ```
 
-Send test states:
+Send serial test states:
 
 ```bash
-./host/agent-lamp set running --agent codex --repo Agent-Lamp --message "Working"
-./host/agent-lamp set waiting --agent codex --repo Agent-Lamp --message "Needs approval"
-./host/agent-lamp set ok --agent codex --repo Agent-Lamp --message "Done"
-./host/agent-lamp set error --agent codex --repo Agent-Lamp --message "Failed"
+./host/agent-lamp set running --transport serial --agent codex --repo Agent-Lamp --message "Working"
+./host/agent-lamp set waiting --transport serial --agent codex --repo Agent-Lamp --message "Needs approval"
+./host/agent-lamp set ok --transport serial --agent codex --repo Agent-Lamp --message "Done"
+./host/agent-lamp set error --transport serial --agent codex --repo Agent-Lamp --message "Failed"
 ```
 
 If `pyserial` is installed, the CLI uses it. If not, it writes directly to the serial device path.
@@ -137,18 +216,21 @@ Use `hooks/claude/settings.example.json` as the reference. Copy the `hooks` bloc
 
 ## Codex Hook
 
-Codex hooks may run in an app sandbox that cannot open `/dev/cu.*` directly. Use the queue bridge: keep one daemon running outside Codex, and let Codex hooks write status lines to `/private/tmp/agent-lamp-queue.tsv`.
+Codex hooks may run in an app sandbox that cannot open device ports or make
+network calls consistently. Use the queue bridge: keep one daemon running
+outside Codex, and let Codex hooks write status lines to
+`/private/tmp/agent-lamp-queue.tsv`.
 
 Start the bridge manually in Terminal:
 
 ```bash
 cd /Users/peterjames/study/Code/Agent-Lamp
-./host/agent-lamp-daemon --port /dev/cu.usbmodem1101
+./host/agent-lamp-daemon --transport http --lamp-url http://agent-lamp.local
 ```
 
 Codex hooks only append status lines to the queue; the bridge is the process
-that forwards those lines to the Tab5 over USB serial. For daily use, install
-the LaunchAgent so the bridge starts again after login:
+that forwards those lines to the Tab5 over HTTP or serial. For daily use,
+install the LaunchAgent so the bridge starts again after login:
 
 ```bash
 cp launchd/com.peterjames.agent-lamp.plist ~/Library/LaunchAgents/
@@ -159,13 +241,13 @@ If the queue updates but the lamp does not, restart the bridge:
 
 ```bash
 cd /Users/peterjames/study/Code/Agent-Lamp
-./host/agent-lamp-daemon --port /dev/cu.usbmodem1101
+./host/agent-lamp-daemon --transport http --lamp-url http://agent-lamp.local
 ```
 
-The daemon keeps the serial connection open and restores the last known status
-when it starts. It does not periodically resend the same status by default,
-because repeated `set` commands make the current firmware redraw the full
-screen.
+The LaunchAgent resends the last known status every 5 seconds. That low-frequency
+refresh lets a Tab5 recover after it reboots or reconnects to Wi-Fi while Codex
+is already mid-turn. The firmware skips redraws when the status line has not
+changed, so this should not create visible flicker.
 
 Codex Desktop does not emit a hook event when a turn is interrupted. To avoid
 leaving the lamp stuck in `running`, the daemon reads the Codex transcript path
@@ -177,7 +259,7 @@ long commands, Codex may not emit hook events for a long time, so a timeout can
 incorrectly mark active work as `ok`. The timeout is disabled by default:
 
 ```bash
-./host/agent-lamp-daemon --port /dev/cu.usbmodem1101 --running-timeout 0 --refresh-interval 0
+./host/agent-lamp-daemon --transport http --lamp-url http://agent-lamp.local --running-timeout 0 --refresh-interval 5
 ```
 
 You can check whether hooks are writing status lines with:
@@ -189,11 +271,13 @@ tail -f /private/tmp/agent-lamp-queue.tsv
 Codex hook behavior is intentionally conservative:
 
 - `UserPromptSubmit` sets `running`.
-- `PermissionRequest` sets `waiting` so the Tab5 shows real permission prompts.
-  A successful `PostToolUse` after `waiting` sets `running`, so approved
-  permissions do not leave the lamp stuck in `waiting`.
-- Set `AGENT_LAMP_HIDE_PERMISSION_REQUESTS=1` or
-  `AGENT_LAMP_SHOW_PERMISSION_REQUESTS=0` if you want to hide permission checks.
+- `running` uses a generic message instead of echoing the prompt, so sensitive
+  prompt text is not shown on the device or copied into the status queue.
+- `PermissionRequest` is hidden by default for Codex so command approvals do not
+  flicker the lamp between `running`, `waiting`, and `running` during a turn.
+- Set `AGENT_LAMP_SHOW_PERMISSION_REQUESTS=1` if you want real permission
+  prompts to show as `waiting`. A successful `PostToolUse` after `waiting`
+  sets `running`, so approved permissions do not leave the lamp stuck.
 - `Notification` sets `waiting`.
 - A successful `PostToolUse` is normally silent to avoid flickering during each
   tool call.
@@ -217,11 +301,12 @@ The Codex hook script writes to `AGENT_LAMP_QUEUE`, defaulting to:
 
 The practical bring-up order is:
 
-1. Flash Tab5.
-2. Run `./host/agent-lamp ports`.
-3. Set `AGENT_LAMP_PORT`.
-4. Manually test `running`, `ok`, and `error`.
-5. Start `./host/agent-lamp-daemon --port /dev/cu.usbmodem1101`.
-6. Enable one hook integration at a time.
+1. Copy `agent_lamp_secrets.example.h` to `agent_lamp_secrets.h` and set Wi-Fi credentials.
+2. Flash Tab5 once over USB-C.
+3. Boot it untethered and confirm the bottom line shows an HTTP target.
+4. Set `AGENT_LAMP_URL=http://agent-lamp.local`, or use the displayed IP address.
+5. Manually test `running`, `ok`, and `error`.
+6. Start `./host/agent-lamp-daemon --transport http --lamp-url http://agent-lamp.local`.
+7. Enable one hook integration at a time.
 
 Codex failure detection is based on `PostToolUse` responses with a non-zero `exit_code` or `success: false`. Other Codex failures may still need more event-specific mapping after observing real hook payloads.
